@@ -9,6 +9,10 @@ from app.db import get_conn, init_db
 from app.generator import generate_variant
 from app.profiles import PLATFORMS
 from app.validation import validate
+from datetime import datetime, timezone
+
+from fastapi.responses import JSONResponse
+
 init_db()
 app = FastAPI(title="Social Media Studio")
 
@@ -108,3 +112,76 @@ def edit_variant(variant_id: int, payload: VariantEdit):
         )
         row = conn.execute("SELECT * FROM variants WHERE id = ?", (variant_id,)).fetchone()
     return dict(row)
+
+class ScheduleIn(BaseModel):
+    publish_at: datetime
+
+
+def _get_variant(conn, variant_id: int):
+    variant = conn.execute("SELECT * FROM variants WHERE id = ?", (variant_id,)).fetchone()
+    if variant is None:
+        raise HTTPException(404, "Variant not found.")
+    return variant
+
+
+@app.post("/variants/{variant_id}/approve")
+def approve_variant(variant_id: int):
+    with get_conn() as conn:
+        variant = _get_variant(conn, variant_id)
+        if variant["status"] != "draft":
+            raise HTTPException(
+                409, f"Only a draft variant can be approved (current status: {variant['status']})."
+            )
+
+        errors = validate(variant["platform"], variant["text"])
+        if errors:
+            raise HTTPException(422, {"message": "Variant breaks platform rules.", "errors": errors})
+
+        conn.execute("UPDATE variants SET status = 'approved' WHERE id = ?", (variant_id,))
+        row = _get_variant(conn, variant_id)
+    return dict(row)
+
+
+@app.post("/variants/{variant_id}/reject")
+def reject_variant(variant_id: int):
+    with get_conn() as conn:
+        variant = _get_variant(conn, variant_id)
+        if variant["status"] not in ("draft", "approved"):
+            raise HTTPException(
+                409, f"A {variant['status']} variant cannot be rejected."
+            )
+        conn.execute("UPDATE variants SET status = 'rejected' WHERE id = ?", (variant_id,))
+        row = _get_variant(conn, variant_id)
+    return dict(row)
+
+
+@app.post("/variants/{variant_id}/schedule", status_code=201)
+def schedule_variant(variant_id: int, payload: ScheduleIn):
+    publish_at = payload.publish_at
+    if publish_at.tzinfo is None:
+        publish_at = publish_at.replace(tzinfo=timezone.utc)
+    publish_at = publish_at.astimezone(timezone.utc)
+
+    with get_conn() as conn:
+        variant = _get_variant(conn, variant_id)
+        if variant["status"] != "approved":
+            raise HTTPException(
+                409,
+                f"Only an approved variant can be scheduled (current status: {variant['status']}).",
+            )
+        if publish_at <= datetime.now(timezone.utc):
+            raise HTTPException(422, "publish_at must be in the future.")
+
+        key = f"{variant_id}:{publish_at.isoformat()}"
+        existing = conn.execute(
+            "SELECT * FROM slots WHERE idempotency_key = ?", (key,)
+        ).fetchone()
+        if existing:
+            return JSONResponse(dict(existing), status_code=200)
+
+        cur = conn.execute(
+            "INSERT INTO slots (variant_id, publish_at, idempotency_key) VALUES (?, ?, ?)",
+            (variant_id, publish_at.isoformat(), key),
+        )
+        slot = conn.execute("SELECT * FROM slots WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return dict(slot)
