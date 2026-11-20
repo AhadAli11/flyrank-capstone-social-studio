@@ -40,6 +40,15 @@ CREATE TABLE IF NOT EXISTS publish_attempts (
     external_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS mock_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adapter TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (adapter, idempotency_key)
+);
 """
 
 

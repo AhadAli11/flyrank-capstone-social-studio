@@ -1,4 +1,5 @@
 import sqlite3
+from app.publish_service import PublishError, publish_slot
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -185,3 +186,25 @@ def schedule_variant(variant_id: int, payload: ScheduleIn):
         )
         slot = conn.execute("SELECT * FROM slots WHERE id = ?", (cur.lastrowid,)).fetchone()
     return dict(slot)
+
+@app.post("/slots/{slot_id}/publish")
+def publish_now(slot_id: int):
+    try:
+        return publish_slot(slot_id)
+    except PublishError as e:
+        raise HTTPException(e.status_code, e.message)
+
+
+@app.get("/history")
+def history():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM publish_attempts ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/mock-posts")
+def mock_posts():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM mock_posts ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
